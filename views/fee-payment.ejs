@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>Pago de Comisión</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            background: #f5f7fb;
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+        }
+        
+        .nav-blur {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(226, 232, 240, 0.5);
+        }
+        
+        .icon-round {
+            width: 36px;
+            height: 36px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        
+        .fee-detail-card {
+            background: white;
+            border-radius: 20px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            border: 1px solid rgba(226, 232, 240, 0.6);
+            transition: transform 0.2s ease;
+        }
+        
+        .fee-detail-card:active {
+            transform: scale(0.98);
+        }
+        
+        .amount-breakdown {
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 1rem;
+        }
+        
+        .pay-button {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 16px;
+            font-weight: 700;
+            font-size: 1.1rem;
+            border: none;
+            width: 100%;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            text-decoration: none;
+        }
+        
+        .pay-button:active {
+            transform: scale(0.97);
+        }
+        
+        .pay-button i {
+            font-size: 1.2rem;
+        }
+        
+        .back-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #64748b;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: color 0.2s;
+        }
+        
+        .back-button:hover {
+            color: #334155;
+        }
+        
+        .info-box {
+            background: #f0fdf4;
+            border-left: 4px solid #22c55e;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+        
+        .info-box.warning {
+            background: #fefce8;
+            border-left-color: #eab308;
+        }
+        
+        .info-box.info {
+            background: #eff6ff;
+            border-left-color: #3b82f6;
+        }
+        
+        .info-box.telegram {
+            background: #e8f4fd;
+            border-left-color: #0088cc;
+        }
+        
+        .telegram-contact {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #0088cc;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 40px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+        
+        .telegram-contact:active {
+            transform: scale(0.97);
+        }
+        
+        .telegram-contact i {
+            font-size: 1.1rem;
+        }
+        
+        @media (max-width: 640px) {
+            .fee-detail-card {
+                padding: 1rem;
+            }
+            .pay-button {
+                font-size: 0.95rem;
+                padding: 0.8rem 1.5rem;
+            }
+            .amount-breakdown {
+                padding: 0.75rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="nav-blur sticky top-0 z-50 px-4 py-2.5 flex items-center justify-between">
+        <div class="flex items-center gap-3 min-w-0">
+            <div class="bg-blue-100 icon-round">
+                <i class="fas fa-user text-blue-600 text-sm"></i>
+            </div>
+            <div class="min-w-0 truncate">
+                <p class="font-semibold text-gray-800 text-sm leading-tight truncate"><%= username %></p>
+                <p class="text-[10px] text-gray-500 leading-tight">ID: <%= userId %></p>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <a href="/user/dashboard" class="flex items-center gap-1.5 text-blue-600 hover:text-blue-800 transition text-xs font-medium bg-blue-50 px-3 py-1.5 rounded-full border border-blue-100 active:scale-95">
+                <i class="fas fa-arrow-left text-[10px]"></i>
+                <span>Volver</span>
+            </a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="max-w-2xl mx-auto px-4 py-5 pb-8">
+        
+        <!-- Back Button -->
+        <a href="/user/dashboard" class="back-button mb-4 inline-flex">
+            <i class="fas fa-arrow-left"></i> Volver al Panel
+        </a>
+
+        <!-- Fee Type Header -->
+        <div class="mb-6">
+            <h1 class="text-2xl font-bold text-gray-800 tracking-tight">
+                <%= feeType === 'direct' ? 'Comisión de Retiro Directo' : 'Comisión de Retiro Pendiente' %>
+            </h1>
+            <p class="text-sm text-gray-500 mt-1">
+                <%= feeType === 'direct' ? 'Paga la comisión para procesar tu retiro directo' : 'Paga la comisión para procesar tu retiro pendiente' %>
+            </p>
+        </div>
+
+        <!-- Fee Details Card -->
+        <div class="fee-detail-card">
+            <!-- Fee Percentage -->
+            <div class="text-center mb-6">
+                <div class="inline-flex items-center justify-center w-20 h-20 rounded-full <%= feeType === 'direct' ? 'bg-indigo-100' : 'bg-pink-100' %> mb-3">
+                    <span class="text-3xl font-bold <%= feeType === 'direct' ? 'text-indigo-600' : 'text-pink-600' %>">
+                        <%= feePercentage %>%</span>
+                </div>
+                <h2 class="text-xl font-bold text-gray-800">
+                    Comisión del <%= feePercentage %>%
+                </h2>
+                <p class="text-sm text-gray-500">Aplicada sobre el monto total</p>
+            </div>
+
+            <!-- Amount Breakdown -->
+            <div class="amount-breakdown mb-6">
+                <div class="flex justify-between items-center py-2 border-b border-gray-200">
+                    <span class="text-gray-600">Monto total del retiro</span>
+                    <span class="font-semibold text-gray-800">$<%= totalAmount.toFixed(2) %></span>
+                </div>
+                <div class="flex justify-between items-center py-2">
+                    <span class="text-gray-600">Comisión a pagar (<%= feePercentage %>%)</span>
+                    <span class="font-bold text-indigo-600 text-lg">$<%= feeAmount.toFixed(2) %></span>
+                </div>
+            </div>
+
+            <!-- Important Notice -->
+            <div class="info-box telegram mb-6">
+                <div class="flex items-start gap-2">
+                    <i class="fas fa-info-circle text-blue-600 mt-0.5"></i>
+                    <div>
+                        <p class="text-sm font-medium text-gray-800">⚠️ Importante</p>
+                        <p class="text-xs text-gray-600">
+                            La comisión <strong>NO se deduce automáticamente</strong> del monto del retiro. 
+                            Deberás pagar el monto de la comisión directamente al contacto de Telegram.
+                            <br><br>
+                            <span class="font-medium">El monto total de tu retiro se mantiene intacto</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Information Boxes -->
+            <div class="space-y-3 mb-6">
+                <div class="info-box">
+                    <div class="flex items-start gap-2">
+                        <i class="fas fa-info-circle text-green-600 mt-0.5"></i>
+                        <div>
+                            <p class="text-sm font-medium text-gray-800">Qué es esta comisión?</p>
+                            <p class="text-xs text-gray-600">Esta comisión cubre los costos de procesamiento y transferencia de tu retiro</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="info-box warning">
+                    <div class="flex items-start gap-2">
+                        <i class="fas fa-clock text-yellow-600 mt-0.5"></i>
+                        <div>
+                            <p class="text-sm font-medium text-gray-800">Tiempo de procesamiento</p>
+                            <p class="text-xs text-gray-600">Una vez abonada la comisión, la retirada se procesará en un plazo de 15 a 30 minutos</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="info-box info">
+                    <div class="flex items-start gap-2">
+                        <i class="fas fa-hand-holding-usd text-blue-600 mt-0.5"></i>
+                        <div>
+                            <p class="text-sm font-medium text-gray-800">Cómo funciona?</p>
+                            <p class="text-xs text-gray-600">
+                                1. Paga la comisión al contacto de Telegram<br>
+                                2. El monto total de tu retiro ($<%= totalAmount.toFixed(2) %>) se mantiene completo<br>
+                                3. Una vez confirmado el pago, procesaremos tu retiro
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Payment Summary -->
+            <div class="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl p-4 mb-6 border border-indigo-100">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Comisión a pagar</p>
+                        <p class="text-2xl font-bold text-indigo-600">$<%= feeAmount.toFixed(2) %></p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Tu retiro</p>
+                        <p class="text-lg font-bold text-green-600">$<%= totalAmount.toFixed(2) %></p>
+                        <p class="text-[10px] text-gray-400">(sin deducción)</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Contact and Pay Section -->
+            <div class="space-y-4">
+
+
+                <!-- Pay Button - Direct Telegram Link -->
+                <a href="https://t.me/qazwsxx77" target="_blank" class="pay-button">
+                    <i class="fab fa-telegram-plane"></i>
+                    Pagar Comisión por Telegram
+                </a>
+
+                <p class="text-center text-xs text-gray-400">
+                    <i class="fas fa-lock text-[10px] mr-1"></i>
+                    Serás redirigido a Telegram para completar el pago
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Add tracking when user clicks the pay button
+        document.querySelector('.pay-button')?.addEventListener('click', function(e) {
+            console.log('🔗 Redirecting to Telegram for payment');
+            // You can add analytics tracking here if needed
+        });
+        
+        // Track when user clicks the contact link
+        document.querySelector('.telegram-contact')?.addEventListener('click', function(e) {
+            console.log('📱 Opening Telegram contact: @qazwsxx77');
+        });
+    </script>
+</body>
+</html>
