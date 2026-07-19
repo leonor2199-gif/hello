@@ -34,22 +34,22 @@ app.set('views', path.join(__dirname, 'views'));
 
 // Create separate MemoryStore instances
 const userSessionStore = new MemoryStore({
-    checkPeriod: 86400000 // Clean up expired sessions daily
+    checkPeriod: 86400000
 });
 
 const adminSessionStore = new MemoryStore({
-    checkPeriod: 86400000 // Clean up expired sessions daily
+    checkPeriod: 86400000
 });
 
 // User session middleware
-const userSession = session({
+const userSessionMiddleware = session({
     secret: SESSION_SECRET + '_user',
     resave: false,
     saveUninitialized: false,
-    name: 'user.sid', // Different cookie name
+    name: 'user.sid',
     cookie: {
         secure: process.env.NODE_ENV === 'production',
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        maxAge: 24 * 60 * 60 * 1000,
         httpOnly: true,
         sameSite: 'lax',
         path: '/'
@@ -58,14 +58,14 @@ const userSession = session({
 });
 
 // Admin session middleware
-const adminSession = session({
+const adminSessionMiddleware = session({
     secret: SESSION_SECRET + '_admin',
     resave: false,
     saveUninitialized: false,
-    name: 'admin.sid', // Different cookie name
+    name: 'admin.sid',
     cookie: {
         secure: process.env.NODE_ENV === 'production',
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        maxAge: 24 * 60 * 60 * 1000,
         httpOnly: true,
         sameSite: 'lax',
         path: '/'
@@ -73,43 +73,53 @@ const adminSession = session({
     store: adminSessionStore
 });
 
-// Apply session middleware based on route
-app.use((req, res, next) => {
-    // Admin routes get admin session
-    if (req.path.startsWith('/admin')) {
-        adminSession(req, res, next);
-    } 
-    // User routes get user session
-    else if (req.path.startsWith('/user')) {
-        userSession(req, res, next);
-    } 
-    // Root and other routes - check both (priority to user)
-    else {
-        userSession(req, res, () => {
-            // Also attach admin session if needed
-            adminSession(req, res, next);
-        });
+// ============================================
+// APPLY SESSION MIDDLEWARE WITH CORRECT ORDER
+// ============================================
+
+// For user routes - apply user session
+app.use('/user', (req, res, next) => {
+    userSessionMiddleware(req, res, next);
+});
+
+// For admin routes - apply admin session
+app.use('/admin', (req, res, next) => {
+    adminSessionMiddleware(req, res, next);
+});
+
+// For root and other routes - apply both but keep separate
+app.use('/', (req, res, next) => {
+    // Check if we already have a session from user or admin routes
+    if (req.path.startsWith('/user') || req.path.startsWith('/admin')) {
+        return next();
     }
+    
+    // For root and API routes, try both
+    // First try user session
+    userSessionMiddleware(req, res, () => {
+        // Then try admin session
+        adminSessionMiddleware(req, res, next);
+    });
 });
 
 // ============================================
-// SESSION DEBUG MIDDLEWARE (Lighter version)
+// SESSION DEBUG MIDDLEWARE
 // ============================================
 
 app.use((req, res, next) => {
     // Only log important routes
     if (req.path.includes('/login') || req.path.includes('/verify') || req.path.includes('/dashboard') || req.path.includes('/logout')) {
         const sessionType = req.path.startsWith('/admin') ? 'Admin' : 'User';
-        const sessionData = req.session ? {
-            id: req.sessionID,
-            userId: req.session.userId,
-            userVerified: req.session.userVerified,
-            adminLoggedIn: req.session.adminLoggedIn,
-            adminUser: req.session.adminUser
-        } : null;
         console.log(`📝 ${sessionType} - ${req.method} ${req.path}`);
         console.log(`  Session ID: ${req.sessionID}`);
-        console.log(`  Session Data:`, sessionData);
+        if (req.session) {
+            console.log(`  Session Data:`, {
+                userId: req.session.userId,
+                userVerified: req.session.userVerified,
+                adminLoggedIn: req.session.adminLoggedIn,
+                adminUser: req.session.adminUser
+            });
+        }
     }
     next();
 });
@@ -167,7 +177,7 @@ app.post('/user/verify', async (req, res) => {
             });
         }
 
-        // Store in user session only
+        // Store in user session
         req.session.userVerified = true;
         req.session.userId = user_id.trim();
         req.session.username = response.data.username || 'User';
@@ -321,7 +331,7 @@ app.get('/user/logout', (req, res) => {
         }
         // Clear the user session cookie
         res.clearCookie('user.sid', { path: '/' });
-        console.log('✅ User session destroyed (admin session remains active if any)');
+        console.log('✅ User session destroyed');
         res.redirect('/user/login');
     });
 });
@@ -333,8 +343,10 @@ app.get('/user/logout', (req, res) => {
 // Admin login page
 app.get('/admin/login', (req, res) => {
     console.log('📄 Admin login page requested');
+    console.log('  Admin Session ID:', req.sessionID);
     
     if (req.session && req.session.adminLoggedIn) {
+        console.log('✅ Admin already logged in, redirecting to dashboard');
         return res.redirect('/admin/dashboard');
     }
     
@@ -418,7 +430,7 @@ app.post('/admin/verify', (req, res) => {
     
     console.log('🔐 Admin login attempt:');
     console.log('  Username:', username);
-    console.log('  Session ID:', req.sessionID);
+    console.log('  Admin Session ID:', req.sessionID);
     
     const ADMIN_USER = process.env.ADMIN_USER || 'admin';
     const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
@@ -435,6 +447,10 @@ app.post('/admin/verify', (req, res) => {
             
             console.log('✅ Admin logged in successfully');
             console.log('  Admin Session ID:', req.sessionID);
+            console.log('  Admin Session Data:', {
+                adminLoggedIn: req.session.adminLoggedIn,
+                adminUser: req.session.adminUser
+            });
             return res.redirect('/admin/dashboard');
         });
     } else {
@@ -445,6 +461,10 @@ app.post('/admin/verify', (req, res) => {
 
 // Admin dashboard
 app.get('/admin/dashboard', (req, res) => {
+    console.log('📊 Admin dashboard access attempt');
+    console.log('  Admin Session ID:', req.sessionID);
+    console.log('  Session Data:', req.session);
+    
     if (!req.session || !req.session.adminLoggedIn) {
         console.log('❌ Unauthorized admin dashboard access');
         return res.redirect('/admin/login');
@@ -481,7 +501,7 @@ app.get('/admin/logout', (req, res) => {
         }
         // Clear the admin session cookie
         res.clearCookie('admin.sid', { path: '/' });
-        console.log('✅ Admin session destroyed (user session remains active if any)');
+        console.log('✅ Admin session destroyed');
         res.redirect('/admin/login');
     });
 });
@@ -493,6 +513,7 @@ app.get('/admin/logout', (req, res) => {
 // Admin API - Get all discovered users
 app.get('/admin/api/users', (req, res) => {
     if (!req.session || !req.session.adminLoggedIn) {
+        console.log('❌ Unauthorized API access - admin not logged in');
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -902,36 +923,13 @@ app.get('/user/fee-payment/:type', async (req, res) => {
 
 // Health check
 app.get('/api/health', (req, res) => {
-    // Check both sessions
-    let userSessionData = null;
-    let adminSessionData = null;
-    
-    // We need to check if sessions exist
-    if (req.session) {
-        // This is the active session
-        if (req.session.userVerified) {
-            userSessionData = {
-                userId: req.session.userId,
-                username: req.session.username
-            };
-        }
-        if (req.session.adminLoggedIn) {
-            adminSessionData = {
-                adminUser: req.session.adminUser
-            };
-        }
-    }
-    
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
         backend: RENDER_API_URL,
         users: discoveredUsers.size,
         sessionStore: 'Separate MemoryStores for User and Admin',
-        sessions: {
-            user: userSessionData,
-            admin: adminSessionData
-        }
+        note: 'User and Admin sessions are completely separate'
     });
 });
 
