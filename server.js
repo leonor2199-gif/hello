@@ -14,6 +14,12 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'your-secret-key';
 
 console.log('🚀 Starting User Dashboard...');
 console.log(`📡 Backend API URL: ${RENDER_API_URL}`);
+console.log(`🔐 Session Secret: ${SESSION_SECRET ? '✅ Set' : '❌ Not set'}`);
+
+// ============================================
+// TRUST PROXY (Important for Render)
+// ============================================
+app.set('trust proxy', 1);
 
 // ============================================
 // MIDDLEWARE
@@ -28,10 +34,9 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 // ============================================
-// SIMPLE SESSION - SINGLE STORE WITH PREFIXES
+// SESSION CONFIGURATION - FIXED FOR RENDER
 // ============================================
 
-// Use a single MemoryStore but with different prefixes for user and admin
 const sessionStore = new MemoryStore({
     checkPeriod: 86400000 // Clean up expired sessions daily
 });
@@ -42,7 +47,7 @@ const sessionConfig = {
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === 'production',
+        secure: false, // Set to false for Render (HTTPS is handled at the edge)
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         httpOnly: true,
         sameSite: 'lax',
@@ -51,20 +56,19 @@ const sessionConfig = {
     store: sessionStore
 };
 
-// User session with user cookie
+// Create separate sessions
 const userSession = session({
     ...sessionConfig,
     name: 'user.sid'
 });
 
-// Admin session with admin cookie
 const adminSession = session({
     ...sessionConfig,
     name: 'admin.sid'
 });
 
 // ============================================
-// SESSION MIDDLEWARE WITH CORRECT APPLICATION
+// APPLY SESSION MIDDLEWARE
 // ============================================
 
 // Apply user session to user routes
@@ -73,9 +77,8 @@ app.use('/user', userSession);
 // Apply admin session to admin routes
 app.use('/admin', adminSession);
 
-// For root and API routes, use user session by default
+// For root, API, and other routes - use user session by default
 app.use('/', (req, res, next) => {
-    // Skip if already handled by route-specific middleware
     if (req.path.startsWith('/user') || req.path.startsWith('/admin')) {
         return next();
     }
@@ -88,9 +91,10 @@ app.use('/', (req, res, next) => {
 
 app.use((req, res, next) => {
     const sessionType = req.path.startsWith('/admin') ? 'Admin' : 'User';
-    if (req.path.includes('/login') || req.path.includes('/verify') || req.path.includes('/dashboard') || req.path.includes('/logout')) {
+    if (req.path.includes('/login') || req.path.includes('/verify') || req.path.includes('/dashboard') || req.path.includes('/logout') || req.path.includes('/api')) {
         console.log(`📝 ${sessionType} - ${req.method} ${req.path}`);
         console.log(`  Session ID: ${req.sessionID}`);
+        console.log(`  Cookies: ${req.headers.cookie || 'None'}`);
         if (req.session) {
             const data = {
                 userId: req.session.userId,
@@ -118,6 +122,8 @@ const userFees = new Map();
 // User login page
 app.get('/user/login', (req, res) => {
     console.log('📄 User login page requested');
+    console.log(`  Session ID: ${req.sessionID}`);
+    console.log(`  Session:`, req.session);
     
     if (req.session && req.session.userVerified && req.session.userId) {
         console.log('✅ User already logged in, redirecting to dashboard');
@@ -162,20 +168,31 @@ app.post('/user/verify', async (req, res) => {
         req.session.userId = user_id.trim();
         req.session.username = response.data.username || 'User';
         
-        console.log('✅ User session saved');
-        console.log(`  User Session ID: ${req.sessionID}`);
-        console.log(`  User ID: ${req.session.userId}`);
+        // Force save the session
+        req.session.save((err) => {
+            if (err) {
+                console.error('❌ Error saving user session:', err);
+                return res.render('user-login', {
+                    title: 'User Login',
+                    error: 'Session error. Please try again.'
+                });
+            }
+            
+            console.log('✅ User session saved successfully');
+            console.log(`  User Session ID: ${req.sessionID}`);
+            console.log(`  User ID: ${req.session.userId}`);
 
-        // Save to discovered users
-        discoveredUsers.set(user_id.trim(), {
-            userId: user_id.trim(),
-            username: response.data.username || 'User',
-            firstSeen: new Date().toISOString(),
-            lastLogin: new Date().toISOString()
+            // Save to discovered users
+            discoveredUsers.set(user_id.trim(), {
+                userId: user_id.trim(),
+                username: response.data.username || 'User',
+                firstSeen: new Date().toISOString(),
+                lastLogin: new Date().toISOString()
+            });
+            console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
+
+            res.redirect('/user/dashboard');
         });
-        console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
-
-        res.redirect('/user/dashboard');
 
     } catch (error) {
         console.error('❌ Error verifying user:', error.message);
@@ -196,7 +213,7 @@ app.post('/user/verify', async (req, res) => {
 app.get('/user/dashboard', async (req, res) => {
     console.log('📊 User dashboard access attempt');
     console.log(`  Session ID: ${req.sessionID}`);
-    console.log(`  Session data:`, req.session);
+    console.log(`  Session:`, req.session);
     
     if (!req.session || !req.session.userVerified || !req.session.userId) {
         console.log('❌ Unauthorized user dashboard access attempt');
@@ -292,7 +309,7 @@ app.get('/user/dashboard', async (req, res) => {
     }
 });
 
-// User logout - Only destroys user session
+// User logout
 app.get('/user/logout', (req, res) => {
     const userId = req.session?.userId || 'unknown';
     console.log(`👋 User logged out: ${userId}`);
@@ -313,6 +330,7 @@ app.get('/user/logout', (req, res) => {
 // Admin login page
 app.get('/admin/login', (req, res) => {
     console.log('📄 Admin login page requested');
+    console.log(`  Admin Session ID: ${req.sessionID}`);
     
     if (req.session && req.session.adminLoggedIn) {
         return res.redirect('/admin/dashboard');
@@ -407,13 +425,20 @@ app.post('/admin/verify', (req, res) => {
         req.session.adminLoggedIn = true;
         req.session.adminUser = username;
         
-        console.log('✅ Admin logged in successfully');
-        console.log('  Admin Session ID:', req.sessionID);
-        console.log('  Admin Session Data:', {
-            adminLoggedIn: req.session.adminLoggedIn,
-            adminUser: req.session.adminUser
+        req.session.save((err) => {
+            if (err) {
+                console.error('❌ Error saving admin session:', err);
+                return res.redirect('/admin/login?error=Session%20error');
+            }
+            
+            console.log('✅ Admin logged in successfully');
+            console.log('  Admin Session ID:', req.sessionID);
+            console.log('  Admin Session Data:', {
+                adminLoggedIn: req.session.adminLoggedIn,
+                adminUser: req.session.adminUser
+            });
+            return res.redirect('/admin/dashboard');
         });
-        return res.redirect('/admin/dashboard');
     } else {
         console.log('❌ Failed admin login attempt - invalid credentials');
         res.redirect('/admin/login?error=Usuario%20o%20contrase%C3%B1a%20incorrectos');
@@ -451,7 +476,7 @@ app.get('/admin/dashboard', (req, res) => {
     }
 });
 
-// Admin logout - Only destroys admin session
+// Admin logout
 app.get('/admin/logout', (req, res) => {
     console.log('👋 Admin logged out');
     
@@ -465,7 +490,7 @@ app.get('/admin/logout', (req, res) => {
 });
 
 // ============================================
-// ADMIN API - USERS
+// ADMIN API - USERS (Keep all existing routes)
 // ============================================
 
 // Admin API - Get all discovered users
@@ -614,10 +639,6 @@ app.post('/admin/api/add-user', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
-// ============================================
-// ADMIN API - FEE MANAGEMENT
-// ============================================
 
 // Admin API - Update user fees
 app.post('/admin/api/update-fees', async (req, res) => {
@@ -881,13 +902,21 @@ app.get('/user/fee-payment/:type', async (req, res) => {
 
 // Health check
 app.get('/api/health', (req, res) => {
+    // Log cookies for debugging
+    console.log('🔍 Health check - Cookies:', req.headers.cookie || 'None');
+    
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
         backend: RENDER_API_URL,
         users: discoveredUsers.size,
-        sessionStore: 'MemoryStore',
-        note: 'User and Admin sessions are separate'
+        sessionID: req.sessionID,
+        sessionData: req.session ? {
+            userId: req.session.userId,
+            userVerified: req.session.userVerified,
+            adminLoggedIn: req.session.adminLoggedIn
+        } : null,
+        cookies: req.headers.cookie || 'None'
     });
 });
 
@@ -911,6 +940,7 @@ app.listen(PORT, () => {
     console.log(`📡 Backend API: ${RENDER_API_URL}`);
     console.log(`🔐 Admin credentials: ${process.env.ADMIN_USER || 'admin'} / ${process.env.ADMIN_PASS || 'admin123'}`);
     console.log(`🔍 Debug mode: ON`);
+    console.log(`📝 Trust proxy: Enabled`);
 });
 
 module.exports = app;
