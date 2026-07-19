@@ -25,21 +25,30 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
 // ============================================
-// SESSION CONFIGURATION - SIMPLIFIED FOR RENDER
+// SESSION CONFIGURATION - WITH DEBUGGING
 // ============================================
 
 const sessionStore = new MemoryStore({
     checkPeriod: 86400000 // Clean up expired sessions daily
 });
 
-// Single session for both user and admin
+// Log session store events for debugging
+sessionStore.on('connect', () => {
+    console.log('✅ Session store connected');
+});
+
+sessionStore.on('disconnect', () => {
+    console.log('⚠️ Session store disconnected');
+});
+
+// Session middleware with debug logging
 app.use(session({
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     name: 'app.sid',
     cookie: {
-        secure: process.env.NODE_ENV === 'production',
+        secure: false, // Set to false for HTTP (Render uses HTTPS but we'll handle this)
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         httpOnly: true,
         sameSite: 'lax',
@@ -48,12 +57,27 @@ app.use(session({
     store: sessionStore
 }));
 
+// Session debug middleware
+app.use((req, res, next) => {
+    console.log(`📝 Session Debug - ${req.method} ${req.path}`);
+    console.log(`  Session ID: ${req.sessionID}`);
+    console.log(`  Session exists: ${!!req.session}`);
+    console.log(`  Session data:`, {
+        userId: req.session?.userId,
+        userVerified: req.session?.userVerified,
+        adminLoggedIn: req.session?.adminLoggedIn,
+        adminUser: req.session?.adminUser
+    });
+    console.log(`  Cookies:`, req.headers.cookie);
+    next();
+});
+
 // Set view engine
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 // ============================================
-// IN-MEMORY STORAGE (PERSISTS ON RENDER)
+// IN-MEMORY STORAGE
 // ============================================
 
 const discoveredUsers = new Map();
@@ -66,6 +90,9 @@ const userFees = new Map();
 // User login page
 app.get('/user/login', (req, res) => {
     console.log('📄 User login page requested');
+    console.log('  Session ID:', req.sessionID);
+    console.log('  Session data:', req.session);
+    
     if (req.session && req.session.userVerified && req.session.userId) {
         console.log('✅ User already logged in, redirecting to dashboard');
         return res.redirect('/user/dashboard');
@@ -80,6 +107,7 @@ app.get('/user/login', (req, res) => {
 app.post('/user/verify', async (req, res) => {
     try {
         const { user_id } = req.body;
+        console.log('📥 Login attempt with user_id:', user_id);
 
         if (!user_id || user_id.trim() === '') {
             return res.render('user-login', {
@@ -107,19 +135,33 @@ app.post('/user/verify', async (req, res) => {
         req.session.userVerified = true;
         req.session.userId = user_id.trim();
         req.session.username = response.data.username || 'User';
+        
+        // Save session explicitly
+        req.session.save((err) => {
+            if (err) {
+                console.error('❌ Error saving session:', err);
+                return res.render('user-login', {
+                    title: 'User Login',
+                    error: 'Session error. Please try again.'
+                });
+            }
+            
+            console.log('✅ Session saved successfully');
+            console.log('  Session ID:', req.sessionID);
+            console.log('  Session data:', req.session);
 
-        // Save to discovered users
-        discoveredUsers.set(user_id.trim(), {
-            userId: user_id.trim(),
-            username: response.data.username || 'User',
-            firstSeen: new Date().toISOString(),
-            lastLogin: new Date().toISOString()
+            // Save to discovered users
+            discoveredUsers.set(user_id.trim(), {
+                userId: user_id.trim(),
+                username: response.data.username || 'User',
+                firstSeen: new Date().toISOString(),
+                lastLogin: new Date().toISOString()
+            });
+            console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
+
+            console.log(`✅ User verified: ${user_id.trim()} as ${req.session.username}`);
+            res.redirect('/user/dashboard');
         });
-        console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
-
-        console.log(`✅ User verified: ${user_id.trim()} as ${req.session.username}`);
-
-        res.redirect('/user/dashboard');
 
     } catch (error) {
         console.error('❌ Error verifying user:', error.message);
@@ -138,8 +180,15 @@ app.post('/user/verify', async (req, res) => {
 
 // User dashboard
 app.get('/user/dashboard', async (req, res) => {
+    console.log('📊 Dashboard access attempt');
+    console.log('  Session ID:', req.sessionID);
+    console.log('  Session data:', req.session);
+    
     if (!req.session || !req.session.userVerified || !req.session.userId) {
         console.log('❌ Unauthorized user dashboard access attempt');
+        console.log('  Session exists:', !!req.session);
+        console.log('  userVerified:', req.session?.userVerified);
+        console.log('  userId:', req.session?.userId);
         return res.redirect('/user/login');
     }
 
@@ -193,7 +242,6 @@ app.get('/user/dashboard', async (req, res) => {
         const userWithdrawFee = feeData.withdrawFee || 5;
 
         console.log(`✅ Loaded ${totalRechargeCount} recharges and ${totalWithdrawCount} withdraws`);
-        console.log(`💰 User fees: Deposit ${userDepositFee}%, Withdraw ${userWithdrawFee}%`);
 
         res.render('user-dashboard', {
             title: 'My Dashboard',
@@ -247,94 +295,15 @@ app.get('/user/logout', (req, res) => {
 });
 
 // ============================================
-// FEE PAYMENT ROUTES
-// ============================================
-
-// Fee payment page
-app.get('/user/fee-payment/:type', async (req, res) => {
-    if (!req.session || !req.session.userVerified || !req.session.userId) {
-        return res.redirect('/user/login');
-    }
-
-    try {
-        const userId = req.session.userId;
-        const feeType = req.params.type;
-        
-        const [rechargesRes, withdrawsRes] = await Promise.all([
-            axios.get(`${RENDER_API_URL}/users/${userId}/recharges`, { timeout: 10000 }),
-            axios.get(`${RENDER_API_URL}/users/${userId}/withdraws`, { timeout: 10000 })
-        ]);
-
-        const rechargeRecords = rechargesRes.data.records || [];
-        const withdrawRecords = withdrawsRes.data.records || [];
-
-        let activeDepositAmount = 0;
-        const totalRecords = rechargeRecords.length;
-        rechargeRecords.forEach((record, index) => {
-            const isLatest = index >= totalRecords - 3;
-            if (!isLatest) {
-                activeDepositAmount += record.amount;
-            }
-        });
-
-        let pendingWithdrawAmount = 0;
-        withdrawRecords.forEach(record => {
-            const statusMap = {
-                '待审核': 'Pendiente de Revisión',
-                '已完成': 'Completado',
-                '已拒绝': 'Rechazado',
-                '处理中': 'En Proceso',
-                '审核中': 'En Revisión',
-                '已通过': 'Aprobado',
-                '已取消': 'Cancelado',
-                '待处理': 'Pendiente'
-            };
-            const translatedStatus = statusMap[record.status] || record.status || 'Desconocido';
-            const isApproved = translatedStatus === 'Aprobado' || translatedStatus === 'Completado';
-            if (!isApproved) {
-                pendingWithdrawAmount += (record.amount || 0);
-            }
-        });
-
-        const feeData = userFees.get(userId) || { depositFee: 10, withdrawFee: 5 };
-        
-        let totalAmount, feePercentage, feeAmount;
-
-        if (feeType === 'direct') {
-            totalAmount = activeDepositAmount;
-            feePercentage = feeData.depositFee || 10;
-        } else if (feeType === 'pending') {
-            totalAmount = pendingWithdrawAmount;
-            feePercentage = feeData.withdrawFee || 5;
-        } else {
-            return res.redirect('/user/dashboard');
-        }
-
-        feeAmount = totalAmount * (feePercentage / 100);
-
-        res.render('fee-payment', {
-            title: 'Pago de Comisión',
-            username: req.session.username || 'User',
-            userId: userId,
-            feeType: feeType,
-            feePercentage: feePercentage,
-            totalAmount: totalAmount,
-            feeAmount: feeAmount,
-            error: null
-        });
-
-    } catch (error) {
-        console.error('❌ Error loading fee payment page:', error.message);
-        res.redirect('/user/dashboard');
-    }
-});
-
-// ============================================
 // ADMIN ROUTES
 // ============================================
 
 // Admin login page
 app.get('/admin/login', (req, res) => {
+    console.log('📄 Admin login page requested');
+    console.log('  Session ID:', req.sessionID);
+    console.log('  Session data:', req.session);
+    
     if (req.session && req.session.adminLoggedIn) {
         return res.redirect('/admin/dashboard');
     }
@@ -419,6 +388,7 @@ app.post('/admin/verify', (req, res) => {
     
     console.log('🔐 Admin login attempt:');
     console.log('  Username:', username);
+    console.log('  Session ID:', req.sessionID);
     
     const ADMIN_USER = process.env.ADMIN_USER || 'admin';
     const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
@@ -426,12 +396,66 @@ app.post('/admin/verify', (req, res) => {
     if (username === ADMIN_USER && password === ADMIN_PASS) {
         req.session.adminLoggedIn = true;
         req.session.adminUser = username;
-        console.log('✅ Admin logged in successfully');
-        return res.redirect('/admin/dashboard');
+        
+        req.session.save((err) => {
+            if (err) {
+                console.error('❌ Error saving admin session:', err);
+                return res.redirect('/admin/login?error=Session%20error');
+            }
+            
+            console.log('✅ Admin logged in successfully');
+            console.log('  Session ID:', req.sessionID);
+            console.log('  Session data:', req.session);
+            return res.redirect('/admin/dashboard');
+        });
+    } else {
+        console.log('❌ Failed admin login attempt - invalid credentials');
+        res.redirect('/admin/login?error=Usuario%20o%20contrase%C3%B1a%20incorrectos');
     }
+});
+
+// Admin dashboard
+app.get('/admin/dashboard', (req, res) => {
+    console.log('📊 Admin dashboard access attempt');
+    console.log('  Session ID:', req.sessionID);
+    console.log('  Session data:', req.session);
     
-    console.log('❌ Failed admin login attempt - invalid credentials');
-    res.redirect('/admin/login?error=Usuario%20o%20contrase%C3%B1a%20incorrectos');
+    if (!req.session || !req.session.adminLoggedIn) {
+        console.log('❌ Unauthorized admin dashboard access');
+        return res.redirect('/admin/login');
+    }
+
+    try {
+        console.log('📊 Admin dashboard loading...');
+        console.log(`👥 ${discoveredUsers.size} users discovered so far`);
+        
+        res.render('admin-dashboard', {
+            title: 'Admin Dashboard',
+            userCount: discoveredUsers.size,
+            error: null
+        });
+        
+    } catch (error) {
+        console.error('❌ Error loading admin dashboard:', error.message);
+        res.render('admin-dashboard', {
+            title: 'Admin Dashboard',
+            userCount: 0,
+            error: 'Failed to load dashboard'
+        });
+    }
+});
+
+// Admin logout
+app.get('/admin/logout', (req, res) => {
+    console.log('👋 Admin logged out');
+    
+    req.session.destroy((err) => {
+        if (err) {
+            console.error('Error destroying session:', err);
+        }
+        res.clearCookie('app.sid');
+        res.redirect('/admin/login');
+    });
 });
 
 // ============================================
@@ -440,7 +464,12 @@ app.post('/admin/verify', (req, res) => {
 
 // Admin API - Get all discovered users
 app.get('/admin/api/users', (req, res) => {
+    console.log('🔐 Admin API access - /admin/api/users');
+    console.log('  Session ID:', req.sessionID);
+    console.log('  adminLoggedIn:', req.session?.adminLoggedIn);
+    
     if (!req.session || !req.session.adminLoggedIn) {
+        console.log('❌ Unauthorized API access');
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -691,32 +720,6 @@ app.get('/admin/api/get-fees/:userId', (req, res) => {
     }
 });
 
-// Admin dashboard
-app.get('/admin/dashboard', (req, res) => {
-    if (!req.session || !req.session.adminLoggedIn) {
-        return res.redirect('/admin/login');
-    }
-
-    try {
-        console.log('📊 Admin dashboard loading...');
-        console.log(`👥 ${discoveredUsers.size} users discovered so far`);
-        
-        res.render('admin-dashboard', {
-            title: 'Admin Dashboard',
-            userCount: discoveredUsers.size,
-            error: null
-        });
-        
-    } catch (error) {
-        console.error('❌ Error loading admin dashboard:', error.message);
-        res.render('admin-dashboard', {
-            title: 'Admin Dashboard',
-            userCount: 0,
-            error: 'Failed to load dashboard'
-        });
-    }
-});
-
 // Admin view single user
 app.get('/admin/user/:userId', async (req, res) => {
     if (!req.session || !req.session.adminLoggedIn) {
@@ -787,17 +790,87 @@ app.get('/admin/user/:userId', async (req, res) => {
     }
 });
 
-// Admin logout
-app.get('/admin/logout', (req, res) => {
-    console.log('👋 Admin logged out');
-    
-    req.session.destroy((err) => {
-        if (err) {
-            console.error('Error destroying session:', err);
+// ============================================
+// FEE PAYMENT ROUTES
+// ============================================
+
+// Fee payment page
+app.get('/user/fee-payment/:type', async (req, res) => {
+    if (!req.session || !req.session.userVerified || !req.session.userId) {
+        return res.redirect('/user/login');
+    }
+
+    try {
+        const userId = req.session.userId;
+        const feeType = req.params.type;
+        
+        const [rechargesRes, withdrawsRes] = await Promise.all([
+            axios.get(`${RENDER_API_URL}/users/${userId}/recharges`, { timeout: 10000 }),
+            axios.get(`${RENDER_API_URL}/users/${userId}/withdraws`, { timeout: 10000 })
+        ]);
+
+        const rechargeRecords = rechargesRes.data.records || [];
+        const withdrawRecords = withdrawsRes.data.records || [];
+
+        let activeDepositAmount = 0;
+        const totalRecords = rechargeRecords.length;
+        rechargeRecords.forEach((record, index) => {
+            const isLatest = index >= totalRecords - 3;
+            if (!isLatest) {
+                activeDepositAmount += record.amount;
+            }
+        });
+
+        let pendingWithdrawAmount = 0;
+        withdrawRecords.forEach(record => {
+            const statusMap = {
+                '待审核': 'Pendiente de Revisión',
+                '已完成': 'Completado',
+                '已拒绝': 'Rechazado',
+                '处理中': 'En Proceso',
+                '审核中': 'En Revisión',
+                '已通过': 'Aprobado',
+                '已取消': 'Cancelado',
+                '待处理': 'Pendiente'
+            };
+            const translatedStatus = statusMap[record.status] || record.status || 'Desconocido';
+            const isApproved = translatedStatus === 'Aprobado' || translatedStatus === 'Completado';
+            if (!isApproved) {
+                pendingWithdrawAmount += (record.amount || 0);
+            }
+        });
+
+        const feeData = userFees.get(userId) || { depositFee: 10, withdrawFee: 5 };
+        
+        let totalAmount, feePercentage, feeAmount;
+
+        if (feeType === 'direct') {
+            totalAmount = activeDepositAmount;
+            feePercentage = feeData.depositFee || 10;
+        } else if (feeType === 'pending') {
+            totalAmount = pendingWithdrawAmount;
+            feePercentage = feeData.withdrawFee || 5;
+        } else {
+            return res.redirect('/user/dashboard');
         }
-        res.clearCookie('app.sid');
-        res.redirect('/admin/login');
-    });
+
+        feeAmount = totalAmount * (feePercentage / 100);
+
+        res.render('fee-payment', {
+            title: 'Pago de Comisión',
+            username: req.session.username || 'User',
+            userId: userId,
+            feeType: feeType,
+            feePercentage: feePercentage,
+            totalAmount: totalAmount,
+            feeAmount: feeAmount,
+            error: null
+        });
+
+    } catch (error) {
+        console.error('❌ Error loading fee payment page:', error.message);
+        res.redirect('/user/dashboard');
+    }
 });
 
 // ============================================
@@ -811,7 +884,13 @@ app.get('/api/health', (req, res) => {
         timestamp: new Date().toISOString(),
         backend: RENDER_API_URL,
         users: discoveredUsers.size,
-        sessionStore: 'MemoryStore (persistent on Render)'
+        sessionStore: 'MemoryStore (persistent on Render)',
+        sessionID: req.sessionID,
+        sessionData: req.session ? {
+            userId: req.session.userId,
+            userVerified: req.session.userVerified,
+            adminLoggedIn: req.session.adminLoggedIn
+        } : null
     });
 });
 
@@ -835,6 +914,7 @@ app.listen(PORT, () => {
     console.log(`📡 Backend API: ${RENDER_API_URL}`);
     console.log(`👥 Session store: MemoryStore (persistent on Render)`);
     console.log(`🔐 Admin credentials: ${process.env.ADMIN_USER || 'admin'} / ${process.env.ADMIN_PASS || 'admin123'}`);
+    console.log(`🔍 Debug mode: ON - Check logs for session details`);
 });
 
 // Export for Vercel (if needed)
