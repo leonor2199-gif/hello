@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: user-dashboard
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: RENDER_API_URL
+        value: https://recharge-bot-dashboard.onrender.com/api
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_USER
+        value: xerlok
+      - key: ADMIN_PASS
+        value: xerlok18
+    healthCheckPath: /api/health
