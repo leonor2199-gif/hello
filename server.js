@@ -14,84 +14,50 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'your-secret-key';
 
 console.log('🚀 Starting User Dashboard...');
 console.log(`📡 Backend API URL: ${RENDER_API_URL}`);
+console.log(`🔐 Session Secret: ${SESSION_SECRET ? '✅ Set' : '❌ Not set'}`);
 
-// Middleware
+// ============================================
+// MIDDLEWARE
+// ============================================
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
-// In-memory storage for discovered users
-const discoveredUsers = new Map();
-const userFees = new Map();
-
 // ============================================
-// SEPARATE SESSION STORES
+// SESSION CONFIGURATION - SIMPLIFIED FOR RENDER
 // ============================================
 
-// Store for user sessions
-const userSessionStore = new MemoryStore({
-  checkPeriod: 86400000
+const sessionStore = new MemoryStore({
+    checkPeriod: 86400000 // Clean up expired sessions daily
 });
 
-// Store for admin sessions
-const adminSessionStore = new MemoryStore({
-  checkPeriod: 86400000
-});
-
-// User session middleware (with different cookie name)
-const userSession = session({
-  secret: SESSION_SECRET + '_user',
-  resave: false,
-  saveUninitialized: false,
-  name: 'user.sid', // Different cookie name
-  cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000,
-    path: '/user', // Only for /user routes
-    httpOnly: true,
-    sameSite: 'lax'
-  },
-  store: userSessionStore
-});
-
-// Admin session middleware (with different cookie name)
-const adminSession = session({
-  secret: SESSION_SECRET + '_admin',
-  resave: false,
-  saveUninitialized: false,
-  name: 'admin.sid', // Different cookie name
-  cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000,
-    path: '/admin', // Only for /admin routes
-    httpOnly: true,
-    sameSite: 'lax'
-  },
-  store: adminSessionStore
-});
-
-// Apply session middleware to specific routes
-app.use('/user', userSession);
-app.use('/admin', adminSession);
-
-// Also apply to root routes
-app.use('/', (req, res, next) => {
-  // Check if the request is for admin or user
-  if (req.path.startsWith('/admin')) {
-    adminSession(req, res, next);
-  } else if (req.path.startsWith('/user')) {
-    userSession(req, res, next);
-  } else {
-    // Default - check both
-    userSession(req, res, () => {
-      adminSession(req, res, next);
-    });
-  }
-});
+// Single session for both user and admin
+app.use(session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    name: 'app.sid',
+    cookie: {
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/'
+    },
+    store: sessionStore
+}));
 
 // Set view engine
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+
+// ============================================
+// IN-MEMORY STORAGE (PERSISTS ON RENDER)
+// ============================================
+
+const discoveredUsers = new Map();
+const userFees = new Map();
 
 // ============================================
 // USER ROUTES
@@ -99,186 +65,185 @@ app.set('views', path.join(__dirname, 'views'));
 
 // User login page
 app.get('/user/login', (req, res) => {
-  console.log('📄 User login page requested');
-  if (req.session && req.session.userVerified && req.session.userId) {
-    console.log('✅ User already logged in, redirecting to dashboard');
-    return res.redirect('/user/dashboard');
-  }
-  res.render('user-login', {
-    title: 'User Login',
-    error: null
-  });
+    console.log('📄 User login page requested');
+    if (req.session && req.session.userVerified && req.session.userId) {
+        console.log('✅ User already logged in, redirecting to dashboard');
+        return res.redirect('/user/dashboard');
+    }
+    res.render('user-login', {
+        title: 'User Login',
+        error: null
+    });
 });
 
 // Verify user ID
 app.post('/user/verify', async (req, res) => {
-  try {
-    const { user_id } = req.body;
+    try {
+        const { user_id } = req.body;
 
-    if (!user_id || user_id.trim() === '') {
-      return res.render('user-login', {
-        title: 'User Login',
-        error: 'Please enter your User ID'
-      });
+        if (!user_id || user_id.trim() === '') {
+            return res.render('user-login', {
+                title: 'User Login',
+                error: 'Please enter your User ID'
+            });
+        }
+
+        console.log(`🔍 Verifying user: ${user_id.trim()}`);
+
+        const response = await axios.get(`${RENDER_API_URL}/users/verify/${user_id.trim()}`, {
+            timeout: 10000
+        });
+        
+        console.log('📡 Verification response:', response.data);
+
+        if (!response.data.exists) {
+            return res.render('user-login', {
+                title: 'User Login',
+                error: 'User not found. Please check your User ID.'
+            });
+        }
+
+        // Store in session
+        req.session.userVerified = true;
+        req.session.userId = user_id.trim();
+        req.session.username = response.data.username || 'User';
+
+        // Save to discovered users
+        discoveredUsers.set(user_id.trim(), {
+            userId: user_id.trim(),
+            username: response.data.username || 'User',
+            firstSeen: new Date().toISOString(),
+            lastLogin: new Date().toISOString()
+        });
+        console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
+
+        console.log(`✅ User verified: ${user_id.trim()} as ${req.session.username}`);
+
+        res.redirect('/user/dashboard');
+
+    } catch (error) {
+        console.error('❌ Error verifying user:', error.message);
+        if (error.code === 'ECONNABORTED') {
+            return res.render('user-login', {
+                title: 'User Login',
+                error: 'Connection timeout. Please try again.'
+            });
+        }
+        res.render('user-login', {
+            title: 'User Login',
+            error: 'Service temporarily unavailable. Please try again later.'
+        });
     }
-
-    console.log(`🔍 Verifying user: ${user_id.trim()}`);
-
-    const response = await axios.get(`${RENDER_API_URL}/users/verify/${user_id.trim()}`, {
-      timeout: 10000
-    });
-    
-    console.log('📡 Verification response:', response.data);
-
-    if (!response.data.exists) {
-      return res.render('user-login', {
-        title: 'User Login',
-        error: 'User not found. Please check your User ID.'
-      });
-    }
-
-    // Store in user session only
-    req.session.userVerified = true;
-    req.session.userId = user_id.trim();
-    req.session.username = response.data.username || 'User';
-
-    // Save to discovered users
-    discoveredUsers.set(user_id.trim(), {
-      userId: user_id.trim(),
-      username: response.data.username || 'User',
-      firstSeen: new Date().toISOString(),
-      lastLogin: new Date().toISOString()
-    });
-    console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
-
-    console.log(`✅ User verified: ${user_id.trim()} as ${req.session.username}`);
-
-    res.redirect('/user/dashboard');
-
-  } catch (error) {
-    console.error('❌ Error verifying user:', error.message);
-    if (error.code === 'ECONNABORTED') {
-      return res.render('user-login', {
-        title: 'User Login',
-        error: 'Connection timeout. Please try again.'
-      });
-    }
-    res.render('user-login', {
-      title: 'User Login',
-      error: 'Service temporarily unavailable. Please try again later.'
-    });
-  }
 });
 
 // User dashboard
 app.get('/user/dashboard', async (req, res) => {
-  if (!req.session || !req.session.userVerified || !req.session.userId) {
-    console.log('❌ Unauthorized user dashboard access attempt');
-    return res.redirect('/user/login');
-  }
+    if (!req.session || !req.session.userVerified || !req.session.userId) {
+        console.log('❌ Unauthorized user dashboard access attempt');
+        return res.redirect('/user/login');
+    }
 
-  try {
-    const userId = req.session.userId;
-    console.log(`📊 Fetching data for user: ${userId}`);
+    try {
+        const userId = req.session.userId;
+        console.log(`📊 Fetching data for user: ${userId}`);
 
-    const [rechargesRes, withdrawsRes] = await Promise.all([
-      axios.get(`${RENDER_API_URL}/users/${userId}/recharges`, { timeout: 10000 }),
-      axios.get(`${RENDER_API_URL}/users/${userId}/withdraws`, { timeout: 10000 })
-    ]);
+        const [rechargesRes, withdrawsRes] = await Promise.all([
+            axios.get(`${RENDER_API_URL}/users/${userId}/recharges`, { timeout: 10000 }),
+            axios.get(`${RENDER_API_URL}/users/${userId}/withdraws`, { timeout: 10000 })
+        ]);
 
-    const rechargeRecords = rechargesRes.data.records || [];
-    const withdrawRecords = withdrawsRes.data.records || [];
+        const rechargeRecords = rechargesRes.data.records || [];
+        const withdrawRecords = withdrawsRes.data.records || [];
 
-    const totalRechargeAmount = rechargeRecords.reduce((sum, r) => sum + (r.amount || 0), 0);
-    const totalWithdrawAmount = withdrawRecords.reduce((sum, r) => sum + (r.amount || 0), 0);
-    const totalRechargeCount = rechargeRecords.length;
-    const totalWithdrawCount = withdrawRecords.length;
+        const totalRechargeAmount = rechargeRecords.reduce((sum, r) => sum + (r.amount || 0), 0);
+        const totalWithdrawAmount = withdrawRecords.reduce((sum, r) => sum + (r.amount || 0), 0);
+        const totalRechargeCount = rechargeRecords.length;
+        const totalWithdrawCount = withdrawRecords.length;
 
-    let activeDepositAmount = 0;
-    const totalRecords = rechargeRecords.length;
-    rechargeRecords.forEach((record, index) => {
-        const isLatest = index >= totalRecords - 3;
-        if (!isLatest) {
-            activeDepositAmount += record.amount;
-        }
-    });
+        let activeDepositAmount = 0;
+        const totalRecords = rechargeRecords.length;
+        rechargeRecords.forEach((record, index) => {
+            const isLatest = index >= totalRecords - 3;
+            if (!isLatest) {
+                activeDepositAmount += record.amount;
+            }
+        });
 
-    let pendingWithdrawAmount = 0;
-    withdrawRecords.forEach(record => {
-        const statusMap = {
-            '待审核': 'Pendiente de Revisión',
-            '已完成': 'Completado',
-            '已拒绝': 'Rechazado',
-            '处理中': 'En Proceso',
-            '审核中': 'En Revisión',
-            '已通过': 'Aprobado',
-            '已取消': 'Cancelado',
-            '待处理': 'Pendiente'
-        };
-        const translatedStatus = statusMap[record.status] || record.status || 'Desconocido';
-        const isApproved = translatedStatus === 'Aprobado' || translatedStatus === 'Completado';
-        if (!isApproved) {
-            pendingWithdrawAmount += (record.amount || 0);
-        }
-    });
+        let pendingWithdrawAmount = 0;
+        withdrawRecords.forEach(record => {
+            const statusMap = {
+                '待审核': 'Pendiente de Revisión',
+                '已完成': 'Completado',
+                '已拒绝': 'Rechazado',
+                '处理中': 'En Proceso',
+                '审核中': 'En Revisión',
+                '已通过': 'Aprobado',
+                '已取消': 'Cancelado',
+                '待处理': 'Pendiente'
+            };
+            const translatedStatus = statusMap[record.status] || record.status || 'Desconocido';
+            const isApproved = translatedStatus === 'Aprobado' || translatedStatus === 'Completado';
+            if (!isApproved) {
+                pendingWithdrawAmount += (record.amount || 0);
+            }
+        });
 
-    const feeData = userFees.get(userId) || { depositFee: 10, withdrawFee: 5 };
-    const userDepositFee = feeData.depositFee || 10;
-    const userWithdrawFee = feeData.withdrawFee || 5;
+        const feeData = userFees.get(userId) || { depositFee: 10, withdrawFee: 5 };
+        const userDepositFee = feeData.depositFee || 10;
+        const userWithdrawFee = feeData.withdrawFee || 5;
 
-    console.log(`✅ Loaded ${totalRechargeCount} recharges and ${totalWithdrawCount} withdraws`);
-    console.log(`💰 User fees: Deposit ${userDepositFee}%, Withdraw ${userWithdrawFee}%`);
+        console.log(`✅ Loaded ${totalRechargeCount} recharges and ${totalWithdrawCount} withdraws`);
+        console.log(`💰 User fees: Deposit ${userDepositFee}%, Withdraw ${userWithdrawFee}%`);
 
-    res.render('user-dashboard', {
-      title: 'My Dashboard',
-      username: req.session.username || 'User',
-      userId: userId,
-      totalRechargeAmount,
-      totalWithdrawAmount,
-      totalRechargeCount,
-      totalWithdrawCount,
-      rechargeRecords,
-      withdrawRecords,
-      activeDepositAmount,
-      pendingWithdrawAmount,
-      userDepositFee,
-      userWithdrawFee,
-      error: null
-    });
+        res.render('user-dashboard', {
+            title: 'My Dashboard',
+            username: req.session.username || 'User',
+            userId: userId,
+            totalRechargeAmount,
+            totalWithdrawAmount,
+            totalRechargeCount,
+            totalWithdrawCount,
+            rechargeRecords,
+            withdrawRecords,
+            activeDepositAmount,
+            pendingWithdrawAmount,
+            userDepositFee,
+            userWithdrawFee,
+            error: null
+        });
 
-  } catch (error) {
-    console.error('❌ Error loading user dashboard:', error.message);
-    res.render('user-dashboard', {
-      title: 'My Dashboard',
-      username: req.session.username || 'User',
-      userId: req.session.userId,
-      totalRechargeAmount: 0,
-      totalWithdrawAmount: 0,
-      totalRechargeCount: 0,
-      totalWithdrawCount: 0,
-      rechargeRecords: [],
-      withdrawRecords: [],
-      activeDepositAmount: 0,
-      pendingWithdrawAmount: 0,
-      userDepositFee: 10,
-      userWithdrawFee: 5,
-      error: 'Failed to load records. Please refresh the page.'
-    });
-  }
+    } catch (error) {
+        console.error('❌ Error loading user dashboard:', error.message);
+        res.render('user-dashboard', {
+            title: 'My Dashboard',
+            username: req.session.username || 'User',
+            userId: req.session.userId,
+            totalRechargeAmount: 0,
+            totalWithdrawAmount: 0,
+            totalRechargeCount: 0,
+            totalWithdrawCount: 0,
+            rechargeRecords: [],
+            withdrawRecords: [],
+            activeDepositAmount: 0,
+            pendingWithdrawAmount: 0,
+            userDepositFee: 10,
+            userWithdrawFee: 5,
+            error: 'Failed to load records. Please refresh the page.'
+        });
+    }
 });
 
-// User logout - Only destroys user session
+// User logout
 app.get('/user/logout', (req, res) => {
-  console.log(`👋 User logged out: ${req.session?.userId || 'unknown'}`);
-  
-  req.session.destroy((err) => {
-    if (err) {
-      console.error('Error destroying user session:', err);
-    }
-    // Clear the user session cookie
-    res.clearCookie('user.sid', { path: '/user' });
-    res.redirect('/user/login');
-  });
+    console.log(`👋 User logged out: ${req.session?.userId || 'unknown'}`);
+    
+    req.session.destroy((err) => {
+        if (err) {
+            console.error('Error destroying session:', err);
+        }
+        res.clearCookie('app.sid');
+        res.redirect('/user/login');
+    });
 });
 
 // ============================================
@@ -455,8 +420,8 @@ app.post('/admin/verify', (req, res) => {
     console.log('🔐 Admin login attempt:');
     console.log('  Username:', username);
     
-    const ADMIN_USER = process.env.ADMIN_USER;
-    const ADMIN_PASS = process.env.ADMIN_PASS;
+    const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+    const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
     
     if (username === ADMIN_USER && password === ADMIN_PASS) {
         req.session.adminLoggedIn = true;
@@ -822,16 +787,15 @@ app.get('/admin/user/:userId', async (req, res) => {
     }
 });
 
-// Admin logout - Only destroys admin session
+// Admin logout
 app.get('/admin/logout', (req, res) => {
     console.log('👋 Admin logged out');
     
     req.session.destroy((err) => {
         if (err) {
-            console.error('Error destroying admin session:', err);
+            console.error('Error destroying session:', err);
         }
-        // Clear the admin session cookie
-        res.clearCookie('admin.sid', { path: '/admin' });
+        res.clearCookie('app.sid');
         res.redirect('/admin/login');
     });
 });
@@ -840,35 +804,38 @@ app.get('/admin/logout', (req, res) => {
 // HEALTH CHECK & ROOT
 // ============================================
 
-// Health check for Vercel
+// Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    backend: RENDER_API_URL
-  });
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        backend: RENDER_API_URL,
+        users: discoveredUsers.size,
+        sessionStore: 'MemoryStore (persistent on Render)'
+    });
 });
 
 // Root redirect
 app.get('/', (req, res) => {
-  res.redirect('/user/login');
+    res.redirect('/user/login');
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('❌ Unhandled error:', err);
-  res.status(500).send('Something went wrong!');
+    console.error('❌ Unhandled error:', err);
+    res.status(500).send('Something went wrong!');
 });
 
-// Export for Vercel
-module.exports = app;
+// ============================================
+// START SERVER
+// ============================================
 
-// Start server (for local development)
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`User Dashboard running on http://localhost:${PORT}`);
-    console.log(`Backend API: ${RENDER_API_URL}`);
-    console.log(`Session Secret: ${SESSION_SECRET ? '✅ Set' : '❌ Not set'}`);
-    console.log(`Admin credentials: ${process.env.ADMIN_USER || 'admin'} / ${process.env.ADMIN_PASS || 'admin123'}`);
-  });
-}
+app.listen(PORT, () => {
+    console.log(`✅ User Dashboard running on http://localhost:${PORT}`);
+    console.log(`📡 Backend API: ${RENDER_API_URL}`);
+    console.log(`👥 Session store: MemoryStore (persistent on Render)`);
+    console.log(`🔐 Admin credentials: ${process.env.ADMIN_USER || 'admin'} / ${process.env.ADMIN_PASS || 'admin123'}`);
+});
+
+// Export for Vercel (if needed)
+module.exports = app;
