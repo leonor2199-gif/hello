@@ -14,7 +14,6 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'your-secret-key';
 
 console.log('🚀 Starting User Dashboard...');
 console.log(`📡 Backend API URL: ${RENDER_API_URL}`);
-console.log(`🔐 Session Secret: ${SESSION_SECRET ? '✅ Set' : '❌ Not set'}`);
 
 // ============================================
 // MIDDLEWARE
@@ -29,77 +28,58 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 // ============================================
-// SEPARATE SESSION STORES FOR USER AND ADMIN
+// SIMPLE SESSION - SINGLE STORE WITH PREFIXES
 // ============================================
 
-// Create separate MemoryStore instances
-const userSessionStore = new MemoryStore({
-    checkPeriod: 86400000
+// Use a single MemoryStore but with different prefixes for user and admin
+const sessionStore = new MemoryStore({
+    checkPeriod: 86400000 // Clean up expired sessions daily
 });
 
-const adminSessionStore = new MemoryStore({
-    checkPeriod: 86400000
-});
-
-// User session middleware
-const userSessionMiddleware = session({
-    secret: SESSION_SECRET + '_user',
+// Base session configuration
+const sessionConfig = {
+    secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    name: 'user.sid',
     cookie: {
         secure: process.env.NODE_ENV === 'production',
-        maxAge: 24 * 60 * 60 * 1000,
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
         httpOnly: true,
         sameSite: 'lax',
         path: '/'
     },
-    store: userSessionStore
+    store: sessionStore
+};
+
+// User session with user cookie
+const userSession = session({
+    ...sessionConfig,
+    name: 'user.sid'
 });
 
-// Admin session middleware
-const adminSessionMiddleware = session({
-    secret: SESSION_SECRET + '_admin',
-    resave: false,
-    saveUninitialized: false,
-    name: 'admin.sid',
-    cookie: {
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 24 * 60 * 60 * 1000,
-        httpOnly: true,
-        sameSite: 'lax',
-        path: '/'
-    },
-    store: adminSessionStore
+// Admin session with admin cookie
+const adminSession = session({
+    ...sessionConfig,
+    name: 'admin.sid'
 });
 
 // ============================================
-// APPLY SESSION MIDDLEWARE WITH CORRECT ORDER
+// SESSION MIDDLEWARE WITH CORRECT APPLICATION
 // ============================================
 
-// For user routes - apply user session
-app.use('/user', (req, res, next) => {
-    userSessionMiddleware(req, res, next);
-});
+// Apply user session to user routes
+app.use('/user', userSession);
 
-// For admin routes - apply admin session
-app.use('/admin', (req, res, next) => {
-    adminSessionMiddleware(req, res, next);
-});
+// Apply admin session to admin routes
+app.use('/admin', adminSession);
 
-// For root and other routes - apply both but keep separate
+// For root and API routes, use user session by default
 app.use('/', (req, res, next) => {
-    // Check if we already have a session from user or admin routes
+    // Skip if already handled by route-specific middleware
     if (req.path.startsWith('/user') || req.path.startsWith('/admin')) {
         return next();
     }
-    
-    // For root and API routes, try both
-    // First try user session
-    userSessionMiddleware(req, res, () => {
-        // Then try admin session
-        adminSessionMiddleware(req, res, next);
-    });
+    userSession(req, res, next);
 });
 
 // ============================================
@@ -107,18 +87,18 @@ app.use('/', (req, res, next) => {
 // ============================================
 
 app.use((req, res, next) => {
-    // Only log important routes
+    const sessionType = req.path.startsWith('/admin') ? 'Admin' : 'User';
     if (req.path.includes('/login') || req.path.includes('/verify') || req.path.includes('/dashboard') || req.path.includes('/logout')) {
-        const sessionType = req.path.startsWith('/admin') ? 'Admin' : 'User';
         console.log(`📝 ${sessionType} - ${req.method} ${req.path}`);
         console.log(`  Session ID: ${req.sessionID}`);
         if (req.session) {
-            console.log(`  Session Data:`, {
+            const data = {
                 userId: req.session.userId,
                 userVerified: req.session.userVerified,
                 adminLoggedIn: req.session.adminLoggedIn,
                 adminUser: req.session.adminUser
-            });
+            };
+            console.log(`  Session Data:`, data);
         }
     }
     next();
@@ -177,36 +157,25 @@ app.post('/user/verify', async (req, res) => {
             });
         }
 
-        // Store in user session
+        // Store in session
         req.session.userVerified = true;
         req.session.userId = user_id.trim();
         req.session.username = response.data.username || 'User';
         
-        // Save session explicitly
-        req.session.save((err) => {
-            if (err) {
-                console.error('❌ Error saving user session:', err);
-                return res.render('user-login', {
-                    title: 'User Login',
-                    error: 'Session error. Please try again.'
-                });
-            }
-            
-            console.log('✅ User session saved successfully');
-            console.log(`  User Session ID: ${req.sessionID}`);
-            console.log(`  User ID: ${req.session.userId}`);
+        console.log('✅ User session saved');
+        console.log(`  User Session ID: ${req.sessionID}`);
+        console.log(`  User ID: ${req.session.userId}`);
 
-            // Save to discovered users
-            discoveredUsers.set(user_id.trim(), {
-                userId: user_id.trim(),
-                username: response.data.username || 'User',
-                firstSeen: new Date().toISOString(),
-                lastLogin: new Date().toISOString()
-            });
-            console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
-
-            res.redirect('/user/dashboard');
+        // Save to discovered users
+        discoveredUsers.set(user_id.trim(), {
+            userId: user_id.trim(),
+            username: response.data.username || 'User',
+            firstSeen: new Date().toISOString(),
+            lastLogin: new Date().toISOString()
         });
+        console.log(`💾 Saved user ${user_id.trim()} to discovered users (total: ${discoveredUsers.size})`);
+
+        res.redirect('/user/dashboard');
 
     } catch (error) {
         console.error('❌ Error verifying user:', error.message);
@@ -225,6 +194,10 @@ app.post('/user/verify', async (req, res) => {
 
 // User dashboard
 app.get('/user/dashboard', async (req, res) => {
+    console.log('📊 User dashboard access attempt');
+    console.log(`  Session ID: ${req.sessionID}`);
+    console.log(`  Session data:`, req.session);
+    
     if (!req.session || !req.session.userVerified || !req.session.userId) {
         console.log('❌ Unauthorized user dashboard access attempt');
         return res.redirect('/user/login');
@@ -324,14 +297,11 @@ app.get('/user/logout', (req, res) => {
     const userId = req.session?.userId || 'unknown';
     console.log(`👋 User logged out: ${userId}`);
     
-    // Destroy only the user session
     req.session.destroy((err) => {
         if (err) {
             console.error('Error destroying user session:', err);
         }
-        // Clear the user session cookie
-        res.clearCookie('user.sid', { path: '/' });
-        console.log('✅ User session destroyed');
+        res.clearCookie('user.sid');
         res.redirect('/user/login');
     });
 });
@@ -343,10 +313,8 @@ app.get('/user/logout', (req, res) => {
 // Admin login page
 app.get('/admin/login', (req, res) => {
     console.log('📄 Admin login page requested');
-    console.log('  Admin Session ID:', req.sessionID);
     
     if (req.session && req.session.adminLoggedIn) {
-        console.log('✅ Admin already logged in, redirecting to dashboard');
         return res.redirect('/admin/dashboard');
     }
     
@@ -439,20 +407,13 @@ app.post('/admin/verify', (req, res) => {
         req.session.adminLoggedIn = true;
         req.session.adminUser = username;
         
-        req.session.save((err) => {
-            if (err) {
-                console.error('❌ Error saving admin session:', err);
-                return res.redirect('/admin/login?error=Session%20error');
-            }
-            
-            console.log('✅ Admin logged in successfully');
-            console.log('  Admin Session ID:', req.sessionID);
-            console.log('  Admin Session Data:', {
-                adminLoggedIn: req.session.adminLoggedIn,
-                adminUser: req.session.adminUser
-            });
-            return res.redirect('/admin/dashboard');
+        console.log('✅ Admin logged in successfully');
+        console.log('  Admin Session ID:', req.sessionID);
+        console.log('  Admin Session Data:', {
+            adminLoggedIn: req.session.adminLoggedIn,
+            adminUser: req.session.adminUser
         });
+        return res.redirect('/admin/dashboard');
     } else {
         console.log('❌ Failed admin login attempt - invalid credentials');
         res.redirect('/admin/login?error=Usuario%20o%20contrase%C3%B1a%20incorrectos');
@@ -462,8 +423,8 @@ app.post('/admin/verify', (req, res) => {
 // Admin dashboard
 app.get('/admin/dashboard', (req, res) => {
     console.log('📊 Admin dashboard access attempt');
-    console.log('  Admin Session ID:', req.sessionID);
-    console.log('  Session Data:', req.session);
+    console.log(`  Admin Session ID: ${req.sessionID}`);
+    console.log(`  Session Data:`, req.session);
     
     if (!req.session || !req.session.adminLoggedIn) {
         console.log('❌ Unauthorized admin dashboard access');
@@ -494,14 +455,11 @@ app.get('/admin/dashboard', (req, res) => {
 app.get('/admin/logout', (req, res) => {
     console.log('👋 Admin logged out');
     
-    // Destroy only the admin session
     req.session.destroy((err) => {
         if (err) {
             console.error('Error destroying admin session:', err);
         }
-        // Clear the admin session cookie
-        res.clearCookie('admin.sid', { path: '/' });
-        console.log('✅ Admin session destroyed');
+        res.clearCookie('admin.sid');
         res.redirect('/admin/login');
     });
 });
@@ -928,8 +886,8 @@ app.get('/api/health', (req, res) => {
         timestamp: new Date().toISOString(),
         backend: RENDER_API_URL,
         users: discoveredUsers.size,
-        sessionStore: 'Separate MemoryStores for User and Admin',
-        note: 'User and Admin sessions are completely separate'
+        sessionStore: 'MemoryStore',
+        note: 'User and Admin sessions are separate'
     });
 });
 
@@ -951,10 +909,8 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
     console.log(`✅ User Dashboard running on http://localhost:${PORT}`);
     console.log(`📡 Backend API: ${RENDER_API_URL}`);
-    console.log(`👥 Session stores: Separate MemoryStores for User and Admin`);
     console.log(`🔐 Admin credentials: ${process.env.ADMIN_USER || 'admin'} / ${process.env.ADMIN_PASS || 'admin123'}`);
-    console.log(`🔍 Debug mode: ON - Check logs for session details`);
+    console.log(`🔍 Debug mode: ON`);
 });
 
-// Export for Vercel (if needed)
 module.exports = app;
